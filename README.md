@@ -23,16 +23,6 @@
 
 ---
 
-## 📁 文件结构
-ymodem_receiver/
-├── ymodem_rev.h # 头文件，包含 API 与数据结构
-├── ymodem_rev.c # 核心实现
-└── README.md # 本文档
-
-text
-
----
-
 ## 🔧 快速开始
 
 ### 1. 移植要求
