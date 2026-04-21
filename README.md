@@ -35,78 +35,9 @@
 | 串口发送回调         | 将 `tx_buffer` 中的数据通过物理串口发送。                     |
 | 串口接收数据喂入     | 将从串口收到的字节流周期性调用 `ymodem_protocol_parser` 喂入。 |
 
-1、system_get_time_ms函数实现，以Zephyr为例
+**时间函数实现示例（Zephyr）：**
+
+```c
 uint32_t system_get_time_ms(void) {
     return k_uptime_get_32();
 }
-2. 初始化与启动
-ymodem_protocol_parser_t ymodem;
-uint8_t rx_buffer[1030];  // 至少 1029 字节
-
-// 创建解析器（初始处于 IDLE 静默状态）
-protocol_parser_create(&ymodem, rx_buffer, sizeof(rx_buffer));
-
-// 设置事件回调（处理文件信息、数据、结束等）
-ymodem_set_event_callback(&ymodem, my_event_handler, NULL);
-
-// 设置发送回调
-protocol_parser_set_send_response_callback(&ymodem, my_send_response, NULL);
-
-// 当需要开始传输时（例如收到激活命令 "rb -E\r"）
-ymodem_protocol_start(&ymodem);  // 发送第一个 'C'，开始握手
-3. 主循环集成
-重要：您必须在主循环或 RTOS 任务中周期性调用 ymodem_protocol_process_poll 来处理超时逻辑，建议周期为 10~50 毫秒。该函数内部会检查握手超时与数据帧超时，并自动触发重传或终止。
-while (1) {
-    uint8_t buf[128];
-    size_t len = uart_read_nonblock(buf, sizeof(buf));
-    if (len > 0) {
-        ymodem_protocol_parser(&ymodem, buf, len);
-    }
-    // 必须周期性调用！处理超时重传与握手维持
-    ymodem_protocol_process_poll(&ymodem);
-    
-    k_msleep(10);  // 或根据系统 Tick 调整
-}
-⚠️ 注意：若未调用 ymodem_protocol_process_poll，超时机制将完全失效，传输可能卡死。
-
-📡 事件回调说明
-通过 ymodem_set_event_callback 注册的回调会接收到以下事件：
-
-事件类型	                                    含义	                                                                用户典型操作
-YMODEM_EVENT_FILE_INFO	        收到文件信息包（文件名、大小）	                                                    打开文件，准备写入
-YMODEM_EVENT_DATA_PACKET	      收到一个数据包（负载数据指针、长度、序号、累计接收字节数）	                        将数据写入文件或 Flash
-YMODEM_EVENT_TRANSFER_COMPLETE	所有数据包接收完毕（第二个 EOT 已应答）	                                    可选，用于更新进度或预关闭文件
-YMODEM_EVENT_SESSION_FINISHED	  会话正式结束（空文件名包已确认），解析器回到 IDLE 静默状态	                  关闭文件，清理资源，等待下一次激活
-YMODEM_EVENT_ERROR	            传输被取消（CAN）或重试超限，会话中止	                                     关闭文件，清理资源，回到静默状态
-
-回调示例：
-void my_event_handler(ymodem_protocol_parser_t *parser,
-                      const ymodem_event_t *evt, void *ctx) {
-    switch (evt->type) {
-    case YMODEM_EVENT_FILE_INFO:
-        open_file(evt->file_name, evt->file_size);
-        break;
-    case YMODEM_EVENT_DATA_PACKET:
-        write_data(evt->data, evt->data_len);
-        break;
-    case YMODEM_EVENT_SESSION_FINISHED:
-    case YMODEM_EVENT_ERROR:
-        close_file();
-        break;
-    default:
-        break;
-    }
-}
-
-⚙️ 配置宏
-可在编译时定义以下宏调整行为（默认值已适用多数场景）：
-
-宏名称	默认值	说明
-YMODEM_RETRANSMISSION_MAX_COUNT	        20	          最大重传次数
-YMODEM_TIMEOUT_MS	                     1000	      帧超时/握手间隔（毫秒）
-
-🧪 测试与兼容性
-✅ 与 Xshell终端测试通过。
-
-📄 许可证
-本项目采用 MIT 许可证。详情见 LICENSE 文件
