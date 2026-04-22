@@ -504,7 +504,7 @@ static void frame_stage_process(ymodem_protocol_parser_t* parser)
                 else if (parser->frame_info.frame_type == YMODEM_FRAME_TYPE_EOT) {
                     parser->stage = YMODEM_STAGE_FINISHING;
                     //编码应答
-                    frame_ack_without_data(parser);
+                    frame_nak_without_data(parser);
                 }
                 else {
                     ;
