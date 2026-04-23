@@ -526,12 +526,13 @@ static void frame_stage_process(ymodem_protocol_parser_t* parser)
                 if ((parser->frame_info.frame_type == YMODEM_FRAME_TYPE_SOH) && (parser->frame_info.current_frame_index == 0)) {
                     if (ymodem_protocol_file_info_parser(parser) == true) {
                         parser->stage = YMODEM_STAGE_ESTABLISHED;
-                        //通知用户会话结束
-                        frame_ack_c_width_data(parser, YMODEM_EVENT_SESSION_FINISHED);
+                        //通知用户收到新的文件
+                        frame_ack_c_width_data(parser, YMODEM_EVENT_FILE_INFO);
                     }
                     else {
                         parser->stage = YMODEM_STAGE_ABORTED;
-                        frame_ack_without_data(parser);
+                        //通知用户会话结束
+                        frame_ack_width_data(parser,YMODEM_EVENT_SESSION_FINISHED);
                     }
                 }
                 else {
