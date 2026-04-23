@@ -497,7 +497,13 @@ static void frame_stage_process(ymodem_protocol_parser_t* parser)
             case YMODEM_STAGE_TRANSFERRING: {
                 if ((parser->frame_info.frame_type == YMODEM_FRAME_TYPE_STX) || (parser->frame_info.frame_type == YMODEM_FRAME_TYPE_SOH)) {
                     parser->file_info.file_rev_frame_number++;
-                    parser->file_info.file_rev_size += parser->frame_info.current_frame_data_len;
+                    uint32_t real_len = parser->frame_info.current_frame_data_len;
+                    //判断是否最后一包，处理填充字节
+                    if(parser->file_info.file_rev_size + real_len > parser->file_info.file_total_size){
+                        real_len = parser->file_info.file_total_size - parser->file_info.file_rev_size;
+                    }
+                    parser->frame_info.current_frame_data_len = real_len;
+                    parser->file_info.file_rev_size += real_len;
                     //通知用户数据包完成,取走数据
                     frame_ack_width_data(parser, YMODEM_EVENT_DATA_PACKET);
                 }
