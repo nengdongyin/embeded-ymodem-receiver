@@ -340,7 +340,7 @@ static bool frame_nak_without_data(ymodem_protocol_parser_t* parser)
     }
     //编码应答
     parser->buffer.tx_buffer_ack_len = 1;
-    parser->buffer.tx_buffer[0] = YMODEM_ACK;
+    parser->buffer.tx_buffer[0] = YMODEM_NAK;
     return true;
 }
 /**
@@ -521,7 +521,7 @@ static void frame_stage_process(ymodem_protocol_parser_t* parser)
                 if (parser->frame_info.frame_type == YMODEM_FRAME_TYPE_EOT) {
                     parser->stage = YMODEM_STAGE_FINISHED;
                     //通知用户数据包完成,取走数据
-                    frame_ack_width_data(parser, YMODEM_EVENT_TRANSFER_COMPLETE);
+                    frame_ack_c_width_data(parser, YMODEM_EVENT_TRANSFER_COMPLETE);
                 }
                 else {
                     ;
@@ -580,12 +580,11 @@ void  ymodem_protocol_parser(ymodem_protocol_parser_t* parser, uint8_t* data, ui
     if ((!parser) || (!data) || (!len)) {
         return;
     }
-    parser->error = YMODEM_ERROR_NEED_MORE_DATA;
     for (int i = 0; i < len; i++) {
         uint8_t byte = data[i];
         if (parser->frame_info.current_frame_rev_len >= parser->buffer.rx_buffer_len) {
             parser->error = YMODEM_ERROR_CRC;//给个CRC错误，清除状态
-            break;
+            frame_stage_process(parser);
         }
         switch (parser->stat)
         {
@@ -593,11 +592,11 @@ void  ymodem_protocol_parser(ymodem_protocol_parser_t* parser, uint8_t* data, ui
             if (byte == YMODEM_CAN) {
                 parser->frame_info.frame_type = YMODEM_FRAME_TYPE_CAN;
                 parser->error = YMODEM_ERROR_NONE;
+                frame_stage_process(parser);
             }
             else {
                 parser->stat = YMODEM_WAIT_HEAD;
                 i--;
-                break;
             }
             break;
         }
@@ -606,17 +605,21 @@ void  ymodem_protocol_parser(ymodem_protocol_parser_t* parser, uint8_t* data, ui
                 parser->frame_info.frame_type = YMODEM_FRAME_TYPE_SOH;
                 parser->frame_info.current_frame_total_len = YMODEM_SOH_FRAME_LEN_BYTE;
                 parser->frame_info.current_frame_data_len = YMODEM_SOH_DATA_LEN_BYTE;
+                parser->buffer.rx_buffer[parser->frame_info.current_frame_rev_len++] = byte;
+                parser->stat = YMODEM_WAIT_SEQ;
             }
             else if (byte == YMODEM_STX) {
                 parser->frame_info.frame_type = YMODEM_FRAME_TYPE_STX;
                 parser->frame_info.current_frame_total_len = YMODEM_STX_FRAME_LEN_BYTE;
                 parser->frame_info.current_frame_data_len = YMODEM_STX_DATA_LEN_BYTE;
+                parser->buffer.rx_buffer[parser->frame_info.current_frame_rev_len++] = byte;
+                parser->stat = YMODEM_WAIT_SEQ;
             }
             else if (byte == YMODEM_EOT) {
                 parser->error = YMODEM_ERROR_NONE;
                 parser->frame_info.frame_type = YMODEM_FRAME_TYPE_EOT;
                 parser->stat = YMODEM_WAIT_HEAD;
-                break;
+                frame_stage_process(parser);
             }
             else if (byte == YMODEM_CAN) {
                 parser->frame_info.frame_type = YMODEM_FRAME_TYPE_CAN;
@@ -625,10 +628,8 @@ void  ymodem_protocol_parser(ymodem_protocol_parser_t* parser, uint8_t* data, ui
                 parser->process.last_time_ms = system_get_time_ms();
             }
             else {
-                break;
+                ;
             }
-            parser->buffer.rx_buffer[parser->frame_info.current_frame_rev_len++] = byte;
-            parser->stat = YMODEM_WAIT_SEQ;
             break;
         }
         case YMODEM_WAIT_SEQ: {
@@ -649,7 +650,7 @@ void  ymodem_protocol_parser(ymodem_protocol_parser_t* parser, uint8_t* data, ui
                     }
                     else {
                         parser->error = YMODEM_ERROR_SEQ;
-                        break;
+                        frame_stage_process(parser);
                     }
                     parser->frame_info.frame_is_start = true;
                     parser->frame_info.current_frame_index = parser->buffer.rx_buffer[YMODEM_SEQ_BYTE_INDEX];
@@ -657,12 +658,18 @@ void  ymodem_protocol_parser(ymodem_protocol_parser_t* parser, uint8_t* data, ui
                 }
                 else {
                     parser->error = YMODEM_ERROR_SEQ;
-                    break;
+                    frame_stage_process(parser);
                 }
             }
             break;
         }
         case YMODEM_WAIT_DATA: {
+            // uint32_t copy_len_max = parser->frame_info.current_frame_total_len - YMODEM_CRC_LEN_BYTE - parser->frame_info.current_frame_rev_len;
+            // uint32_t copy_len = len - i;
+            //          copy_len = copy_len > copy_len_max?copy_len_max:copy_len;
+            // memcpy(&parser->buffer.rx_buffer[parser->frame_info.current_frame_rev_len],&data[i],copy_len);
+            // i += copy_len - 1;
+            // parser->frame_info.current_frame_rev_len =parser->frame_info.current_frame_rev_len + copy_len;
             parser->buffer.rx_buffer[parser->frame_info.current_frame_rev_len++] = byte;
             if (parser->frame_info.current_frame_rev_len == parser->frame_info.current_frame_total_len - YMODEM_CRC_LEN_BYTE) {
                 parser->stat = YMODEM_WAIT_CRC;
@@ -678,7 +685,7 @@ void  ymodem_protocol_parser(ymodem_protocol_parser_t* parser, uint8_t* data, ui
                 uint16_t calculated_crc = calculate_crc16(&parser->buffer.rx_buffer[YMODEM_DATA_BYTE_INDEX], parser->frame_info.current_frame_data_len);
                 if (received_crc != calculated_crc) {
                     parser->error = YMODEM_ERROR_CRC;
-                    break;
+                    frame_stage_process(parser);
                 }
                 else {
                     if (parser->frame_info.current_frame_is_resend == true) {
@@ -687,6 +694,7 @@ void  ymodem_protocol_parser(ymodem_protocol_parser_t* parser, uint8_t* data, ui
                     else {
                         parser->error = YMODEM_ERROR_NONE;
                     }
+                    frame_stage_process(parser);
                     parser->process.is_handshake_active = true;
                     parser->frame_info.frame_is_end = true;
                 }
@@ -696,9 +704,6 @@ void  ymodem_protocol_parser(ymodem_protocol_parser_t* parser, uint8_t* data, ui
         default:
             break;
         }
-    }
-    if (parser->error != YMODEM_ERROR_NEED_MORE_DATA) {
-        frame_stage_process(parser);
     }
 }
 

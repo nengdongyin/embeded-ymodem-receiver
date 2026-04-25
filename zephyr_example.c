@@ -12,6 +12,7 @@
 #include <string.h>
 #include <zephyr/logging/log.h>
 #include "ymodem_rev.h"
+#include <zephyr/fs/fs.h>
 LOG_MODULE_REGISTER(my_app, LOG_LEVEL_INF);
 /* 定义栈大小和优先级 */
 #define STACKSIZE 10240
@@ -30,6 +31,7 @@ static struct k_thread threadA_data;
 static struct k_thread threadB_data;
 /* 定义队列和队列项 */
 K_PIPE_DEFINE(my_pipe, 2048, 1);
+struct fs_file_t file;
 uint32_t system_get_time_ms(void)
 {
      return k_uptime_get_32();
@@ -45,7 +47,7 @@ static void uart1_irq_callback(const struct device *dev, void *user_data)
 
     /* 处理接收中断 */
     if (uart_irq_rx_ready(dev)) {
-        uint8_t rx_buf[64];
+        uint8_t rx_buf[1029];
         int bytes_read;
         /* 一次性读取FIFO中所有数据*/
         bytes_read = uart_fifo_read(dev, rx_buf, sizeof(rx_buf));
@@ -59,17 +61,37 @@ static void uart1_irq_callback(const struct device *dev, void *user_data)
 }
 /* 3. 线程入口函数 A */
 void ymodem0_event_handler(ymodem_protocol_parser_t *p, const ymodem_event_t *e, void *ctx) {
+    int rc;
     switch (e->type) {
     case YMODEM_EVENT_FILE_INFO:
         // 打开文件 e->file_name，准备写入
         LOG_INF("file name:%s size:%d!\n",e->file_name,e->file_size); 
-        break;
+        char full_path[128];
+        // 将挂载点 "/lfs" 和文件名拼接成完整路径
+        snprintf(full_path, sizeof(full_path), "/lfs/%s", e->file_name);
+        // 3. 创建并打开文件（如果存在则覆盖）
+        rc = fs_open(&file, full_path, FS_O_CREATE | FS_O_RDWR);
+        if (rc != 0) {
+            LOG_ERR("Failed to open %s (error %d)", full_path, rc);
+        }
+        break;      
     case YMODEM_EVENT_DATA_PACKET:
         // 将 e->data 写入文件
+        // 4. 写入数据
+        int bytes_written = fs_write(&file, e->data, e->data_len);
+        if (bytes_written < 0) {
+            LOG_ERR("Failed to write data (error %d)", bytes_written);
+            fs_close(&file);
+        }
         LOG_INF("data seq:%d size:%d!\n",e->data_seq,e->data_len); 
         break;
     case YMODEM_EVENT_TRANSFER_COMPLETE:
         // 数据接收完成，可关闭文件（但可能还有结束包）
+        // 5. 关闭文件
+        rc = fs_close(&file);
+        if (rc != 0) {
+            LOG_ERR("Failed to close file (error %d)", rc);
+        }
         LOG_INF("file send end!\n"); 
         break;
     case YMODEM_EVENT_SESSION_FINISHED:
@@ -94,7 +116,7 @@ void threadA(void *arg1, void *arg2, void *arg3)
     ARG_UNUSED(arg1);
     ARG_UNUSED(arg2);
     ARG_UNUSED(arg3);
-    uint8_t buffer[133];
+    uint8_t buffer[1029];
     uint8_t ymodem_buffer[1280];
     int bytes_read;
 
@@ -108,6 +130,7 @@ void threadA(void *arg1, void *arg2, void *arg3)
         // bytes_read 由返回值返回
         bytes_read = k_pipe_read(&my_pipe, buffer, sizeof(buffer), K_MSEC(100));
         if(bytes_read > 0){
+            LOG_INF("pipe read size:%d!\n",bytes_read); 
             ymodem_protocol_parser(&ymodem0,buffer,bytes_read);
         }
         else{
@@ -129,12 +152,38 @@ void threadB(void *arg1, void *arg2, void *arg3)
         k_msleep(2000);
     }
 }
+void set_baud_rate(const struct device *uart_dev, uint32_t new_baud) {
+    struct uart_config cfg;
+    int ret;
+
+    // 1. 获取当前 UART 配置
+    ret = uart_config_get(uart_dev, &cfg);
+    if (ret != 0) {
+        printk("Error: uart_config_get() failed (%d)\n", ret);
+        return;
+    }
+
+    // 2. 仅修改波特率，其他参数（数据位、停止位、流控等）保持不变
+    cfg.baudrate = new_baud;
+
+    // 3. 应用新配置
+    ret = uart_configure(uart_dev, &cfg);
+    if (ret == 0) {
+        printk("UART baudrate changed to %d successfully!\n", new_baud);
+    } else {
+        printk("Error: uart_configure() failed (%d)\n", ret);
+    }
+}
 int main(void)
 {
+    // 1. 文件系统已通过 fstab 自动挂载，无需手动挂载
+    // 2. 初始化文件对象
+    fs_file_t_init(&file);
     /* 1. 检查设备是否就绪 */
     if (!device_is_ready(uart1_dev)) {
         LOG_INF("UART1 device not ready!\n");
     }
+    set_baud_rate(uart1_dev,460800);
     /* 2. 配置并启用中断 */
     uart_irq_callback_user_data_set(uart1_dev, uart1_irq_callback, NULL);
     uart_irq_rx_enable(uart1_dev);

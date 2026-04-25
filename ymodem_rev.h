@@ -64,21 +64,11 @@ typedef enum
 }ymodem_file_prase_stat_e;
 
 /**
- * @brief Ymodem协议处理状态枚举
- */
-typedef enum
-{
-	YMODEM_START_HANDSHAKE = 0, /**< 开始握手 */
-	YMODEM_WAIT_HANDSHAKE_ACK,  /**< 等待握手ACK */
-}ymodem_process_stat_e;
-
-/**
  * @brief Ymodem协议错误码枚举
  */
 typedef enum
 {
 	YMODEM_ERROR_NONE = 0,              /**< 无错误 */
-	YMODEM_ERROR_NEED_MORE_DATA,        /**< 需要更多数据 */
 	YMODEM_ERROR_TIME_OUT,              /**< 超时错误 */
 	YMODEM_ERROR_CRC,                   /**< CRC校验错误 */
 	YMODEM_ERROR_SEQ,                   /**< 序号错误 */
@@ -292,3 +282,4 @@ void ymodem_protocol_start(ymodem_protocol_parser_t* parser);
  * @return 当前系统时间（毫秒）
  */
 uint32_t system_get_time_ms(void);
+
