@@ -482,7 +482,7 @@ void test_soh_frame_parsed_in_two_chunks(void)
 
 void test_stx_full_frame_parsed_chunked(void)
 {
-    uint8_t frame[YMODEM_STX_FRAME_LEN_BYTE];
+    uint8_t frame[YMODEM_STX_FRAME_LEN_BYTE] = { 0 } ;
     ymodem_receiver_start(&parser);
     build_valid_soh_frame(frame, 0,
         (const uint8_t *)"big.bin\000"  "4096", 13);
