@@ -2,7 +2,7 @@
 
 **项目名称**：Ymodem 嵌入式协议库
 **版本**：v1.0
-**文档日期**：2025-07
+**文档日期**：2026-05
 **适用范围**：裸机 MCU、RTOS（Zephyr / FreeRTOS / RT-Thread 等）、Windows/Linux 桌面测试
 
 ---
