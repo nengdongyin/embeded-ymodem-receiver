@@ -21,7 +21,6 @@
 
 #pragma once
 #include "ymodem_common.h"
-
 typedef struct ymodem_receiver_parser ymodem_receiver_parser_t;
 typedef struct ymodem_receiver_event ymodem_receiver_event_t;
 
@@ -142,7 +141,6 @@ struct ymodem_receiver_parser
     ymodem_receiver_process_t        process;    /**< 协议处理状态 */
     ymodem_receiver_event_t          user_evt;   /**< 用户通知事件缓存 */
 };
-
 /**
  * @brief 创建 Ymodem 协议接收器
  *
@@ -185,8 +183,13 @@ bool ymodem_receiver_set_send_response_callback(ymodem_receiver_parser_t* parser
  * @param parser 解析器实例
  * @param data   输入数据缓冲区
  * @param len    输入数据长度
+ * @return ymodem_error_e 本次调用的处理结果：
+ *         - ::YMODEM_ERROR_NONE    本次调用内完整接收了一帧
+ *         - ::YMODEM_ERROR_WAIT_MORE  数据不足，需要继续喂入更多字节
+ *         - ::YMODEM_ERROR_GARBAGE   帧间收到非帧头字节（非 Ymodem 数据，责任链应解锁）
+ *         - 其他错误码              帧校验/序号/超限等错误
  */
-void ymodem_receiver_parse(ymodem_receiver_parser_t* parser, const uint8_t* data, uint32_t len);
+ymodem_error_e ymodem_receiver_parse(ymodem_receiver_parser_t* parser, const uint8_t* data, uint32_t len);
 
 /**
  * @brief Ymodem 接收器超时轮询
@@ -194,8 +197,10 @@ void ymodem_receiver_parse(ymodem_receiver_parser_t* parser, const uint8_t* data
  * 需在主循环中定期调用。检测帧接收超时和握手超时。
  *
  * @param parser 解析器实例
+ * @return true  触发了超时处理（发送了 NAK 或重发了 'C'）
+ * @return false 未超时、IDLE 状态或 parser 为 NULL
  */
-void ymodem_receiver_poll(ymodem_receiver_parser_t* parser);
+bool ymodem_receiver_poll(ymodem_receiver_parser_t* parser);
 
 /**
  * @brief 启动 Ymodem 接收器
@@ -203,5 +208,18 @@ void ymodem_receiver_poll(ymodem_receiver_parser_t* parser);
  * 发送初始 'C' 字符进入 ESTABLISHING 阶段。
  *
  * @param parser 解析器实例
+ * @return true  启动成功
+ * @return false parser 为 NULL
  */
-void ymodem_receiver_start(ymodem_receiver_parser_t* parser);
+bool ymodem_receiver_start(ymodem_receiver_parser_t* parser);
+
+/**
+ * @brief 复位 Ymodem 接收器内部状态
+ *
+ * 根据当前错误类型和协议阶段执行分级复位。
+ *
+ * @param parser 解析器实例
+ * @return true 复位成功
+ * @return false parser 为 NULL
+ */
+bool ymodem_receiver_reset(ymodem_receiver_parser_t* parser);

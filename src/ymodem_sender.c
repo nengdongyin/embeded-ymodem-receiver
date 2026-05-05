@@ -54,7 +54,7 @@ static void sender_send_packet(ymodem_sender_t* send)
  *
  * @param send 发送器实例
  */
-static void ymodem_sender_reset(ymodem_sender_t* send)
+void ymodem_sender_reset(ymodem_sender_t* send)
 {
     if (!send) {
         return;
@@ -554,22 +554,34 @@ bool ymodem_sender_set_send_packet_callback(ymodem_sender_t* send,
  * - FINISHING:    NAK 重发 EOT
  * - FINISHED:     ACK 进入下一文件；NAK 重发
  * - ABORTED:      'C' 尝试重启
+ *
+ * @return ymodem_error_e 本次调用结果：
+ *         - YMODEM_ERROR_NONE    响应被成功处理
+ *         - YMODEM_ERROR_GARBAGE   数据非 Ymodem 响应
+ *         - YMODEM_ERROR_WAIT_MORE 未触发处理（如等待第二个 CAN）
+ *         - 其他                  — 错误码
  */
-void ymodem_sender_parse(ymodem_sender_t* send, const uint8_t* data, uint32_t len)
+ymodem_error_e ymodem_sender_parse(ymodem_sender_t* send, const uint8_t* data, uint32_t len)
 {
     if ((!send) || (!data) || (!len)) {
-        return;
+        return YMODEM_ERROR_WAIT_MORE;
     }
     send->error = YMODEM_ERROR_NONE;
+
+    bool acted = false;
+    bool acknowledged = false;
+    bool garbage = false;
 
     for (uint32_t i = 0; i < len; i++) {
         uint8_t byte = data[i];
 
         /* ---- CAN 两字节序列检测（与 stage 无关） ---- */
         if (byte == YMODEM_CAN) {
+            acknowledged = true;
             if (send->stat == YMODEM_SENDER_WAIT_CAN_2) {
                 send->error = YMODEM_ERROR_CAN;
                 frame_stage_process(send);
+                acted = true;
             }
             else {
                 send->stat = YMODEM_SENDER_WAIT_CAN_2;
@@ -583,31 +595,43 @@ void ymodem_sender_parse(ymodem_sender_t* send, const uint8_t* data, uint32_t le
             case YMODEM_STAGE_ESTABLISHING: {
                 if (byte == YMODEM_C) {
                     frame_stage_process(send);
+                    acted = true;
+                }
+                else {
+                    garbage = true;
                 }
                 break;
             }
 
             /* ESTABLISHED: ACK + C 组合 → TRANSFERRING */
             case YMODEM_STAGE_ESTABLISHED: {
+                acknowledged = true;
                 if (byte == YMODEM_NAK) {
                     send->error = YMODEM_ERROR_RESEND;
                     frame_stage_process(send);
+                    acted = true;
                 }
-                if (send->stat == YMODEM_SENDER_WAIT_ACK) {
-                    if (byte == YMODEM_ACK) {
-                        send->stat = YMODEM_SENDER_WAIT_C;
+                else if (byte == YMODEM_ACK || byte == YMODEM_C) {
+                    if (send->stat == YMODEM_SENDER_WAIT_ACK) {
+                        if (byte == YMODEM_ACK) {
+                            send->stat = YMODEM_SENDER_WAIT_C;
+                        }
                     }
-                }
-                else if (send->stat == YMODEM_SENDER_WAIT_C) {
-                    if (byte == YMODEM_C) {
-                        frame_stage_process(send);
+                    else if (send->stat == YMODEM_SENDER_WAIT_C) {
+                        if (byte == YMODEM_C) {
+                            frame_stage_process(send);
+                            acted = true;
+                        }
+                        else {
+                            send->stat = YMODEM_SENDER_WAIT_ACK;
+                        }
                     }
                     else {
                         send->stat = YMODEM_SENDER_WAIT_ACK;
                     }
                 }
                 else {
-                    send->stat = YMODEM_SENDER_WAIT_ACK;
+                    garbage = true;
                 }
                 break;
             }
@@ -616,6 +640,10 @@ void ymodem_sender_parse(ymodem_sender_t* send, const uint8_t* data, uint32_t le
             case YMODEM_STAGE_ABORTED: {
                 if (byte == YMODEM_C) {
                     frame_stage_process(send);
+                    acted = true;
+                }
+                else {
+                    garbage = true;
                 }
                 break;
             }
@@ -624,18 +652,20 @@ void ymodem_sender_parse(ymodem_sender_t* send, const uint8_t* data, uint32_t le
             case YMODEM_STAGE_TRANSFERRING: {
                 if (byte == YMODEM_ACK) {
                     frame_stage_process(send);
+                    acted = true;
                 }
                 else if (byte == YMODEM_NAK) {
                     send->error = YMODEM_ERROR_RESEND;
                     frame_stage_process(send);
+                    acted = true;
                 }
                 else {
-                    ;
+                    garbage = true;
                 }
                 break;
             }
 
-            /* FINISHING: NAK → 重发 EOT; 其他也触发重发 */
+            /* FINISHING: NAK → 重发 EOT; 其他也触发重发（任何字节都处理） */
             case YMODEM_STAGE_FINISHING: {
                 if (byte == YMODEM_NAK) {
                     frame_stage_process(send);
@@ -644,6 +674,7 @@ void ymodem_sender_parse(ymodem_sender_t* send, const uint8_t* data, uint32_t le
                     send->error = YMODEM_ERROR_RESEND;
                     frame_stage_process(send);
                 }
+                acted = true;
                 break;
             }
 
@@ -651,47 +682,65 @@ void ymodem_sender_parse(ymodem_sender_t* send, const uint8_t* data, uint32_t le
             case YMODEM_STAGE_FINISHED: {
                 if (byte == YMODEM_ACK) {
                     frame_stage_process(send);
+                    acted = true;
                 }
                 else if (byte == YMODEM_NAK) {
                     send->error = YMODEM_ERROR_RESEND;
                     frame_stage_process(send);
+                    acted = true;
                 }
                 else {
-                    send->stat = YMODEM_SENDER_WAIT_ACK;
+                    garbage = true;
                 }
                 break;
             }
 
-            default:
+            /* IDLE / unknown stage: 所有字节均为垃圾 */
+            default: {
+                garbage = true;
                 break;
+            }
             }
         }
     }
+
+    if (acted) {
+        return send->error;
+    }
+    if (garbage) {
+        return YMODEM_ERROR_GARBAGE;
+    }
+    if (acknowledged) {
+        return YMODEM_ERROR_NONE;
+    }
+    return YMODEM_ERROR_WAIT_MORE;
 }
 
-void ymodem_sender_poll(ymodem_sender_t* send)
+bool ymodem_sender_poll(ymodem_sender_t* send)
 {
     if (!send) {
-        return;
+        return false;
     }
     if (send->stage == YMODEM_STAGE_IDLE) {
-        return;
+        return false;
     }
     uint32_t now = system_get_time_ms();
     if (now - send->process.last_time_ms < YMODEM_TIMEOUT_MS) {
-        return;
+        return false;
     }
     send->process.last_time_ms = now;
     send->error = YMODEM_ERROR_TIME_OUT;
     frame_stage_process(send);
+    return true;
 }
 
-void ymodem_sender_start(ymodem_sender_t* send)
+bool ymodem_sender_start(ymodem_sender_t* send)
 {
     if (!send) {
-        return;
+        return false;
     }
     send->stage = YMODEM_STAGE_ESTABLISHING;
+    return true;
 }
 
 void ymodem_sender_enable_1k(ymodem_sender_t* send)

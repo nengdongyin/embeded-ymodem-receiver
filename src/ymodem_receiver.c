@@ -43,7 +43,7 @@
  * @return true 成功
  * @return false parser 为 NULL
  */
-static bool ymodem_receiver_reset(ymodem_receiver_parser_t* parser)
+bool ymodem_receiver_reset(ymodem_receiver_parser_t* parser)
 {
     if (!parser) {
         return false;
@@ -57,7 +57,7 @@ static bool ymodem_receiver_reset(ymodem_receiver_parser_t* parser)
         switch (parser->stage)
         {
         case YMODEM_STAGE_FINISHED:
-        case YMODEM_STAGE_ABORTED: {
+        case YMODEM_STAGE_IDLE: {
             memset(&parser->file_info, 0, sizeof(parser->file_info));
             break;
         }
@@ -90,7 +90,7 @@ static bool ymodem_receiver_reset(ymodem_receiver_parser_t* parser)
     uint32_t saved_error_count = parser->frame_info.current_frame_error_count;
     memset(&parser->frame_info, 0, sizeof(parser->frame_info));
     parser->frame_info.current_frame_error_count = saved_error_count;
-    if ((parser->stage != YMODEM_STAGE_FINISHING) && (parser->stage != YMODEM_STAGE_ABORTED)) {    
+    if ((parser->stage != YMODEM_STAGE_FINISHING) && (parser->stage != YMODEM_STAGE_IDLE)) {
         parser->stat = YMODEM_RECV_WAIT_HEAD;
     }
     parser->error = YMODEM_ERROR_NONE;
@@ -314,7 +314,7 @@ static bool frame_error_process(ymodem_receiver_parser_t* parser)
         parser->frame_info.current_frame_error_count++;
         if (parser->frame_info.current_frame_error_count > YMODEM_RETRANSMISSION_MAX_COUNT) {
             parser->error = YMODEM_ERROR_RETRANSMISSION_COUNT_MAX;
-            parser->stage = YMODEM_STAGE_ABORTED;
+            parser->stage = YMODEM_STAGE_IDLE;
         }
         return true;
     }
@@ -322,7 +322,7 @@ static bool frame_error_process(ymodem_receiver_parser_t* parser)
         parser->process.handshake_count++;
         if (parser->process.handshake_count > YMODEM_RETRANSMISSION_MAX_COUNT) {
             parser->error = YMODEM_ERROR_RETRANSMISSION_COUNT_MAX;
-            parser->stage = YMODEM_STAGE_ABORTED;
+            parser->stage = YMODEM_STAGE_IDLE;
         }
         return true;
     }
@@ -387,7 +387,7 @@ static void frame_stage_process(ymodem_receiver_parser_t* parser)
     else {
         /* CAN 在任何阶段无条件取消 */
         if (parser->frame_info.frame_type == YMODEM_FRAME_TYPE_CAN) {
-            parser->stage = YMODEM_STAGE_ABORTED;
+            parser->stage = YMODEM_STAGE_IDLE;
             frame_ack_with_data(parser, YMODEM_RECV_EVENT_ERROR);
         }
         else {
@@ -502,15 +502,6 @@ static void frame_stage_process(ymodem_receiver_parser_t* parser)
                 }
                 break;
             }
-
-            /* --------------------------------------------------------
-             * ABORTED: 转为 IDLE 静默等待重新 start()
-             * -------------------------------------------------------- */
-            case YMODEM_STAGE_ABORTED: {
-                parser->stage = YMODEM_STAGE_IDLE;
-                break;
-            }
-
             default: {
                 frame_nak_without_data(parser);
                 break;
@@ -584,20 +575,35 @@ bool ymodem_receiver_set_send_response_callback(ymodem_receiver_parser_t* parser
  *
  * frame_is_end 标志控制延迟复位：帧完成后跳过非帧头字节，
  * 等待下一帧头字节时才复位，保证用户的断言窗口。
+ *
+ * @return ymodem_error_e 本次调用结果：
+ *         - YMODEM_ERROR_NONE    — 本次调用内完整处理了一帧（成功）
+ *         - YMODEM_ERROR_WAIT_MORE — 未完成帧处理，需要继续喂入数据
+ *         - YMODEM_ERROR_GARBAGE   — 帧间收到非帧头字节，非 Ymodem 数据
+ *         - 其他                  — 帧错误码（CRC/SEQ/重传超限等）
  */
-void ymodem_receiver_parse(ymodem_receiver_parser_t* parser, const uint8_t* data, uint32_t len)
+ymodem_error_e ymodem_receiver_parse(ymodem_receiver_parser_t* parser, const uint8_t* data, uint32_t len)
 {
     if ((!parser) || (!data) || (!len)) {
-        return;
+        return YMODEM_ERROR_WAIT_MORE;
     }
+    if (parser->stage == YMODEM_STAGE_IDLE) {
+        return YMODEM_ERROR_GARBAGE;
+    }
+    bool had_pending = parser->frame_info.frame_is_end;
+    bool saw_garbage = false;
+    bool started_new_frame = false;
+
     for (uint32_t i = 0; i < len; i++) {
         uint8_t byte = data[i];
 
-        /* ---- 延迟复位：前帧已完成，等帧头或跳过废弃字节 ---- */
+        /* ---- 延迟复位：前帧已完成，等帧头或标记垃圾字节 ---- */
         if (parser->frame_info.frame_is_end) {
             if (byte == YMODEM_SOH || byte == YMODEM_STX || byte == YMODEM_EOT || byte == YMODEM_CAN) {
                 ymodem_receiver_reset(parser);
+                started_new_frame = true;
             } else {
+                saw_garbage = true;
                 continue;
             }
         }
@@ -743,6 +749,14 @@ void ymodem_receiver_parse(ymodem_receiver_parser_t* parser, const uint8_t* data
             break;
         }
     }
+
+    if (parser->frame_info.frame_is_end && (!had_pending || started_new_frame)) {
+        return parser->error;
+    }
+    if (saw_garbage) {
+        return YMODEM_ERROR_GARBAGE;
+    }
+    return YMODEM_ERROR_WAIT_MORE;
 }
 
 /**
@@ -751,18 +765,21 @@ void ymodem_receiver_parse(ymodem_receiver_parser_t* parser, const uint8_t* data
  * 检测两种超时场景：
  * - ESTABLISHING 阶段握手超时 → 重发 'C'
  * - 帧接收中途超时 (frame_is_start) → NAK
+ *
+ * @return true  触发了超时处理（已发送应答）
+ * @return false 未超时、IDLE 状态或 parser 为 NULL
  */
-void ymodem_receiver_poll(ymodem_receiver_parser_t* parser)
+bool ymodem_receiver_poll(ymodem_receiver_parser_t* parser)
 {
     if (!parser) {
-        return;
+        return false;
     }
     if (parser->stage == YMODEM_STAGE_IDLE) {
-        return;
+        return false;
     }
     uint32_t now = system_get_time_ms();
     if (now - parser->process.last_time_ms < YMODEM_TIMEOUT_MS) {
-        return;
+        return false;
     }
     parser->process.last_time_ms = now;
 
@@ -771,7 +788,7 @@ void ymodem_receiver_poll(ymodem_receiver_parser_t* parser)
         if (parser->process.is_handshake_active == false) {
             parser->error = YMODEM_ERROR_HANDSHAKE_NACK;
             frame_stage_process(parser);
-            return;
+            return true;
         }
     }
     /* 帧接收超时 → NAK */
@@ -779,25 +796,29 @@ void ymodem_receiver_poll(ymodem_receiver_parser_t* parser)
         parser->frame_info.frame_is_start = false;
         parser->error = YMODEM_ERROR_TIME_OUT;
         frame_stage_process(parser);
+        return true;
     }
-    else {
-        ;
-    }
+    return false;
 }
 
-void ymodem_receiver_start(ymodem_receiver_parser_t* parser)
+bool ymodem_receiver_start(ymodem_receiver_parser_t* parser)
 {
     if (!parser) {
-        return;
+        return false;
     }
-    /* 发送初始 'C' 并触发应答回调 */
-    parser->buffer.tx_buffer_ack_len = 1;
-    parser->buffer.tx_buffer[0] = YMODEM_C;
-    if (parser->callbacks.send_response) {
-        parser->callbacks.send_response(parser, parser->callbacks.send_response_user_ctx);
-    }
-    parser->process.last_time_ms = system_get_time_ms();
+    /* 完全复位所有状态（模拟 create 时的初始化） */
+    memset(&parser->process, 0, sizeof(parser->process));
+    memset(&parser->file_info, 0, sizeof(parser->file_info));
+    memset(&parser->frame_info, 0, sizeof(parser->frame_info));
+    memset(&parser->user_evt, 0, sizeof(parser->user_evt));    
+    
+    parser->stat = YMODEM_RECV_WAIT_HEAD;
     parser->stage = YMODEM_STAGE_ESTABLISHING;
+    parser->process.last_time_ms = system_get_time_ms();
+        
+    /* 设置握手错误，让 frame_stage_process 处理重发逻辑 */
     parser->error = YMODEM_ERROR_HANDSHAKE_NACK;
-    frame_stage_process(parser);
+    //frame_stage_process(parser);
+   
+    return true;
 }

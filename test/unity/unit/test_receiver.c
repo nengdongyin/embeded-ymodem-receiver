@@ -181,10 +181,10 @@ void test_set_send_response_callback_null_parser_returns_false(void)
     TEST_ASSERT_FALSE(result);
 }
 
-void test_start_null_parser_silent(void)
+void test_start_null_parser_returns_false(void)
 {
-    ymodem_receiver_start(NULL);
-    // should not crash
+    bool ret = ymodem_receiver_start(NULL);
+    TEST_ASSERT_FALSE(ret);
 }
 
 void test_parse_null_parser_silent(void)
@@ -211,16 +211,26 @@ void test_parse_zero_len_silent(void)
 /*  Category: Start / ESTABLISHING                                   */
 /* ================================================================ */
 
-void test_start_sends_C_enters_establishing(void)
+void test_start_returns_true_on_success(void)
+{
+    bool ret = ymodem_receiver_start(&parser);
+    TEST_ASSERT_TRUE(ret);
+}
+
+void test_start_sets_establishing_no_response(void)
 {
     ymodem_receiver_start(&parser);
     TEST_ASSERT_EQUAL(YMODEM_STAGE_ESTABLISHING, parser.stage);
-    TEST_ASSERT(mock_response_sent);
+    TEST_ASSERT_FALSE(mock_response_sent);
 }
 
-void test_start_response_is_C_byte(void)
+void test_poll_response_is_C_byte(void)
 {
     ymodem_receiver_start(&parser);
+    mock_response_sent = false;
+    mock_time_ms += 1000;
+    ymodem_receiver_poll(&parser);
+    TEST_ASSERT(mock_response_sent);
     TEST_ASSERT_EQUAL(YMODEM_C, parser.buffer.tx_buffer[0]);
 }
 
@@ -276,6 +286,17 @@ void test_soh_frame_info_parsed(void)
     TEST_ASSERT_EQUAL(2048, mock_event_file_size);
 }
 
+void test_parse_returns_none_on_success(void)
+{
+    uint8_t frame[YMODEM_SOH_FRAME_LEN_BYTE];
+    ymodem_receiver_start(&parser);
+    build_valid_soh_frame(frame, 0,
+        (const uint8_t *)"app.bin\000" "2048", 15);
+
+    ymodem_error_e ret = ymodem_receiver_parse(&parser, frame, sizeof(frame));
+    TEST_ASSERT_EQUAL(YMODEM_ERROR_NONE, ret);
+}
+
 void test_stx_frame_header_recognized(void)
 {
     uint8_t stx = YMODEM_STX;
@@ -318,7 +339,7 @@ void test_two_CAN_bytes_cancels_transfer(void)
     ymodem_receiver_parse(&parser, &can, 1);
     ymodem_receiver_parse(&parser, &can, 1);
 
-    TEST_ASSERT_EQUAL(YMODEM_STAGE_ABORTED, parser.stage);
+    TEST_ASSERT_EQUAL(YMODEM_STAGE_IDLE, parser.stage);
     TEST_ASSERT_EQUAL(YMODEM_FRAME_TYPE_CAN, parser.frame_info.frame_type);
 }
 
@@ -394,6 +415,43 @@ void test_crc_error_sends_nak(void)
     TEST_ASSERT_EQUAL(YMODEM_NAK, parser.buffer.tx_buffer[0]);
 }
 
+void test_parse_returns_crc_on_crc_error(void)
+{
+    uint8_t frame[YMODEM_SOH_FRAME_LEN_BYTE];
+    memset(frame, 0, sizeof(frame));
+    frame[YMODEM_FRAME_TYPE_BYTE_INDEX] = YMODEM_SOH;
+    frame[YMODEM_SEQ_BYTE_INDEX]        = 0;
+    frame[YMODEM_NOR_SEQ_BYTE_INDEX]    = 0xFF;
+    frame[YMODEM_SOH_FRAME_LEN_BYTE - 2] = 0xAB;
+    frame[YMODEM_SOH_FRAME_LEN_BYTE - 1] = 0xCD;
+    ymodem_receiver_start(&parser);
+
+    ymodem_error_e ret = ymodem_receiver_parse(&parser, frame, YMODEM_SOH_FRAME_LEN_BYTE);
+    TEST_ASSERT_EQUAL(YMODEM_ERROR_CRC, ret);
+}
+
+void test_parse_returns_wait_more_on_partial_frame(void)
+{
+    uint8_t soh = YMODEM_SOH;
+    uint8_t seq = 0x00;
+    ymodem_receiver_start(&parser);
+
+    ymodem_error_e ret;
+
+    ret = ymodem_receiver_parse(&parser, &soh, 1);
+    TEST_ASSERT_EQUAL(YMODEM_ERROR_WAIT_MORE, ret);
+
+    ret = ymodem_receiver_parse(&parser, &seq, 1);
+    TEST_ASSERT_EQUAL(YMODEM_ERROR_WAIT_MORE, ret);
+}
+
+void test_parse_returns_wait_more_on_null(void)
+{
+    uint8_t b = YMODEM_SOH;
+    ymodem_error_e ret = ymodem_receiver_parse(NULL, &b, 1);
+    TEST_ASSERT_EQUAL(YMODEM_ERROR_WAIT_MORE, ret);
+}
+
 /* ================================================================ */
 /*  Category: Re-transmission detection                              */
 /* ================================================================ */
@@ -440,7 +498,7 @@ void test_retransmission_limit_exceeded_aborts(void)
         ymodem_receiver_parse(&parser, frame, YMODEM_SOH_FRAME_LEN_BYTE);
     }
 
-    TEST_ASSERT_EQUAL(YMODEM_STAGE_ABORTED, parser.stage);
+    TEST_ASSERT_EQUAL(YMODEM_STAGE_IDLE, parser.stage);
     TEST_ASSERT(mock_event_called);
     TEST_ASSERT_EQUAL(YMODEM_RECV_EVENT_ERROR, mock_last_event_type);
 }
@@ -482,7 +540,7 @@ void test_soh_frame_parsed_in_two_chunks(void)
 
 void test_stx_full_frame_parsed_chunked(void)
 {
-    uint8_t frame[YMODEM_STX_FRAME_LEN_BYTE] = { 0 } ;
+    uint8_t frame[YMODEM_STX_FRAME_LEN_BYTE] = { 0 };
     ymodem_receiver_start(&parser);
     build_valid_soh_frame(frame, 0,
         (const uint8_t *)"big.bin\000"  "4096", 13);
@@ -644,32 +702,36 @@ void test_double_eot_enters_finished(void)
 /*  Category: Poll / timeout                                         */
 /* ================================================================ */
 
-void test_poll_null_parser_no_crash(void)
+void test_poll_null_parser_returns_false(void)
 {
-    ymodem_receiver_poll(NULL);
+    bool ret = ymodem_receiver_poll(NULL);
+    TEST_ASSERT_FALSE(ret);
 }
 
-void test_poll_idle_no_action(void)
+void test_poll_idle_returns_false(void)
 {
-    ymodem_receiver_poll(&parser);
+    bool ret = ymodem_receiver_poll(&parser);
+    TEST_ASSERT_FALSE(ret);
     TEST_ASSERT_EQUAL(YMODEM_STAGE_IDLE, parser.stage);
 }
 
-void test_poll_before_timeout_no_action(void)
+void test_poll_before_timeout_returns_false(void)
 {
     ymodem_receiver_start(&parser);
     mock_time_ms += 500; /* less than 1000ms */
     mock_response_sent = false;
-    ymodem_receiver_poll(&parser);
+    bool ret = ymodem_receiver_poll(&parser);
+    TEST_ASSERT_FALSE(ret);
     TEST_ASSERT_FALSE(mock_response_sent);
 }
 
-void test_timeout_in_establishing_re_sends_C(void)
+void test_timeout_in_establishing_returns_true(void)
 {
     ymodem_receiver_start(&parser);
     mock_response_sent = false;
     mock_time_ms += 1000;
-    ymodem_receiver_poll(&parser);
+    bool ret = ymodem_receiver_poll(&parser);
+    TEST_ASSERT_TRUE(ret);
     TEST_ASSERT(mock_response_sent);
 }
 
@@ -681,7 +743,7 @@ void test_timeout_handshake_limit_exceeded_aborts(void)
         mock_response_sent = false;
         ymodem_receiver_poll(&parser);
     }
-    TEST_ASSERT_EQUAL(YMODEM_STAGE_ABORTED, parser.stage);
+    TEST_ASSERT_EQUAL(YMODEM_STAGE_IDLE, parser.stage);
 }
 
 void test_timeout_on_frame_in_progress_sends_nak(void)
@@ -695,8 +757,9 @@ void test_timeout_on_frame_in_progress_sends_nak(void)
     mock_time_ms += 1000;
     mock_response_sent = false;
     mock_event_called = false;
-    ymodem_receiver_poll(&parser);
+    bool ret = ymodem_receiver_poll(&parser);
 
+    TEST_ASSERT_TRUE(ret);
     TEST_ASSERT(mock_response_sent);
     TEST_ASSERT_EQUAL(YMODEM_NAK, parser.buffer.tx_buffer[0]);
 }
@@ -858,7 +921,7 @@ void test_frame_info_preserved_after_can_cancel(void)
     ymodem_receiver_parse(&parser, &can, 1);
     ymodem_receiver_parse(&parser, &can, 1);
 
-    TEST_ASSERT_EQUAL(YMODEM_STAGE_ABORTED, parser.stage);
+    TEST_ASSERT_EQUAL(YMODEM_STAGE_IDLE, parser.stage);
     TEST_ASSERT_EQUAL(YMODEM_FRAME_TYPE_CAN, parser.frame_info.frame_type);
 }
 
@@ -905,12 +968,59 @@ void test_noise_bytes_skipped_until_next_header(void)
     ymodem_receiver_parse(&parser, frame, sizeof(frame));
     TEST_ASSERT_EQUAL(YMODEM_STAGE_ESTABLISHED, parser.stage);
 
-    /* send noise bytes — should be skipped */
+    /* send noise bytes — should signal GARBAGE */
     uint8_t noise[] = {0xFF, 0xFE, 0x00, 0x07, 0xAB};
     mock_response_sent = false;
-    ymodem_receiver_parse(&parser, noise, sizeof(noise));
+    ymodem_error_e ret = ymodem_receiver_parse(&parser, noise, sizeof(noise));
+    TEST_ASSERT_EQUAL(YMODEM_ERROR_GARBAGE, ret);
     TEST_ASSERT_FALSE(mock_response_sent);
     TEST_ASSERT_EQUAL(YMODEM_STAGE_ESTABLISHED, parser.stage);
+}
+
+void test_garbage_then_frame_header_works(void)
+{
+    uint8_t frame[YMODEM_SOH_FRAME_LEN_BYTE];
+    ymodem_receiver_start(&parser);
+
+    /* first: complete file info frame */
+    build_valid_soh_frame(frame, 0,
+        (const uint8_t *)"a.bin\000"   "100", 9);
+    ymodem_receiver_parse(&parser, frame, sizeof(frame));
+    TEST_ASSERT_EQUAL(YMODEM_STAGE_ESTABLISHED, parser.stage);
+
+    /* garbage first → GARBAGE */
+    uint8_t garbage = 0xFF;
+    ymodem_error_e ret = ymodem_receiver_parse(&parser, &garbage, 1);
+    TEST_ASSERT_EQUAL(YMODEM_ERROR_GARBAGE, ret);
+
+    /* then valid data frame → NONE */
+    mock_event_called = false;
+    build_valid_soh_frame(frame, 1, NULL, 0);
+    ret = ymodem_receiver_parse(&parser, frame, sizeof(frame));
+    TEST_ASSERT_EQUAL(YMODEM_ERROR_NONE, ret);
+    TEST_ASSERT(mock_event_called);
+    TEST_ASSERT_EQUAL(YMODEM_RECV_EVENT_DATA_PACKET, mock_last_event_type);
+}
+
+void test_mid_frame_returns_wait_more_not_garbage(void)
+{
+    /* mid-frame bytes should return WAIT_MORE, not GARBAGE */
+    uint8_t soh = YMODEM_SOH;
+    uint8_t seq_ok = 0x00;
+    uint8_t seq_nok = 0xFF;
+
+    ymodem_receiver_start(&parser);
+
+    ymodem_error_e ret;
+
+    ret = ymodem_receiver_parse(&parser, &soh, 1);
+    TEST_ASSERT_EQUAL(YMODEM_ERROR_WAIT_MORE, ret);
+
+    ret = ymodem_receiver_parse(&parser, &seq_ok, 1);
+    TEST_ASSERT_EQUAL(YMODEM_ERROR_WAIT_MORE, ret);
+
+    ret = ymodem_receiver_parse(&parser, &seq_nok, 1);
+    TEST_ASSERT_EQUAL(YMODEM_ERROR_WAIT_MORE, ret);
 }
 
 /* ================================================================ */
@@ -919,24 +1029,32 @@ void test_noise_bytes_skipped_until_next_header(void)
 
 void test_poll_no_timeout_after_frame_complete(void)
 {
+    uint8_t frame[YMODEM_SOH_FRAME_LEN_BYTE];
     uint8_t soh = YMODEM_SOH;
 
     ymodem_receiver_start(&parser);
 
-    /* start a frame to set frame_is_start */
+    /* complete file info handshake to advance past ESTABLISHING */
+    build_valid_soh_frame(frame, 0,
+        (const uint8_t *)"f.bin\000"   "128", 9);
+    ymodem_receiver_parse(&parser, frame, sizeof(frame));
+    TEST_ASSERT_EQUAL(YMODEM_STAGE_ESTABLISHED, parser.stage);
+
+    /* start a data frame to set frame_is_start */
     ymodem_receiver_parse(&parser, &soh, 1);
-    /* now frame_is_start is true, but parse didn't complete */
 
     /* poll: should trigger timeout, frame_is_end set=true, frame_is_start=false */
     mock_time_ms += 1000;
     mock_response_sent = false;
-    ymodem_receiver_poll(&parser);
+    bool ret = ymodem_receiver_poll(&parser);
+    TEST_ASSERT_TRUE(ret);
     TEST_ASSERT(mock_response_sent);
 
     /* poll again: frame_is_start is false now, should not trigger */
     mock_time_ms += 1000;
     mock_response_sent = false;
-    ymodem_receiver_poll(&parser);
+    ret = ymodem_receiver_poll(&parser);
+    TEST_ASSERT_FALSE(ret);
     TEST_ASSERT_FALSE(mock_response_sent);
 }
 
@@ -1007,14 +1125,15 @@ int main(void)
     RUN_TEST(test_create_small_buffer_returns_false);
     RUN_TEST(test_set_event_callback_null_parser_returns_false);
     RUN_TEST(test_set_send_response_callback_null_parser_returns_false);
-    RUN_TEST(test_start_null_parser_silent);
+    RUN_TEST(test_start_null_parser_returns_false);
     RUN_TEST(test_parse_null_parser_silent);
     RUN_TEST(test_parse_null_data_silent);
     RUN_TEST(test_parse_zero_len_silent);
 
-    /* Start / ESTABLISHING */
-    RUN_TEST(test_start_sends_C_enters_establishing);
-    RUN_TEST(test_start_response_is_C_byte);
+    /* Start */
+    RUN_TEST(test_start_returns_true_on_success);
+    RUN_TEST(test_start_sets_establishing_no_response);
+    RUN_TEST(test_poll_response_is_C_byte);
 
     /* Noise / invalid data */
     RUN_TEST(test_zero_byte_ignored_in_wait_head);
@@ -1035,6 +1154,12 @@ int main(void)
 
     /* CRC */
     RUN_TEST(test_crc_error_sends_nak);
+
+    /* Parse return value validation */
+    RUN_TEST(test_parse_returns_none_on_success);
+    RUN_TEST(test_parse_returns_crc_on_crc_error);
+    RUN_TEST(test_parse_returns_wait_more_on_partial_frame);
+    RUN_TEST(test_parse_returns_wait_more_on_null);
 
     /* Retransmission */
     RUN_TEST(test_prev_seq_recognized_as_resend);
@@ -1059,10 +1184,10 @@ int main(void)
     RUN_TEST(test_double_eot_enters_finished);
 
     /* Poll / timeout */
-    RUN_TEST(test_poll_null_parser_no_crash);
-    RUN_TEST(test_poll_idle_no_action);
-    RUN_TEST(test_poll_before_timeout_no_action);
-    RUN_TEST(test_timeout_in_establishing_re_sends_C);
+    RUN_TEST(test_poll_null_parser_returns_false);
+    RUN_TEST(test_poll_idle_returns_false);
+    RUN_TEST(test_poll_before_timeout_returns_false);
+    RUN_TEST(test_timeout_in_establishing_returns_true);
     RUN_TEST(test_timeout_handshake_limit_exceeded_aborts);
     RUN_TEST(test_timeout_on_frame_in_progress_sends_nak);
     RUN_TEST(test_poll_no_timeout_after_frame_complete);
@@ -1080,6 +1205,8 @@ int main(void)
 
     /* Noise/stage edge cases */
     RUN_TEST(test_noise_bytes_skipped_until_next_header);
+    RUN_TEST(test_garbage_then_frame_header_works);
+    RUN_TEST(test_mid_frame_returns_wait_more_not_garbage);
     RUN_TEST(test_stx_ignored_in_establishing_no_file_info_yet);
     RUN_TEST(test_finished_state_sends_nak_for_non_file_info);
 

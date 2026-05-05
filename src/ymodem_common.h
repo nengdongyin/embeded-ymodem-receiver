@@ -104,7 +104,9 @@ typedef enum
  */
 typedef enum
 {
-    YMODEM_ERROR_NONE                    = 0, /**< 无错误 */
+    YMODEM_ERROR_NONE                    = 0, /**< 无错误（帧处理完成） */
+    YMODEM_ERROR_WAIT_MORE,                   /**< 等待更多数据（帧接收中途，非错误） */
+    YMODEM_ERROR_GARBAGE,                     /**< 帧间收到非帧头字节（非 Ymodem 数据） */
     YMODEM_ERROR_TIME_OUT,                    /**< 超时错误（poll 触发） */
     YMODEM_ERROR_CRC,                         /**< CRC 校验失败 */
     YMODEM_ERROR_SEQ,                         /**< 序号不匹配 */

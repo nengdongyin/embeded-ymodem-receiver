@@ -183,8 +183,13 @@ bool ymodem_sender_set_send_packet_callback(ymodem_sender_t* send,
  * @param send 发送器实例
  * @param data 接收方响应数据
  * @param len  数据长度
+ * @return ymodem_error_e 本次调用的处理结果：
+ *         - ::YMODEM_ERROR_NONE    响应被成功处理
+ *         - ::YMODEM_ERROR_GARBAGE   数据非 Ymodem 响应，责任链应解锁
+ *         - ::YMODEM_ERROR_WAIT_MORE 未触发处理（如等待第二个 CAN）
+ *         - 其他错误码              重发/超限/CAN 取消等
  */
-void ymodem_sender_parse(ymodem_sender_t* send, const uint8_t* data, uint32_t len);
+ymodem_error_e ymodem_sender_parse(ymodem_sender_t* send, const uint8_t* data, uint32_t len);
 
 /**
  * @brief Ymodem 发送器超时轮询
@@ -193,8 +198,10 @@ void ymodem_sender_parse(ymodem_sender_t* send, const uint8_t* data, uint32_t le
  * 超时后自动触发重传逻辑。
  *
  * @param send 发送器实例
+ * @return true  触发了超时处理（重传或发送 CAN）
+ * @return false 未超时、IDLE 状态或 send 为 NULL
  */
-void ymodem_sender_poll(ymodem_sender_t* send);
+bool ymodem_sender_poll(ymodem_sender_t* send);
 
 /**
  * @brief 启动 Ymodem 发送器
@@ -202,8 +209,10 @@ void ymodem_sender_poll(ymodem_sender_t* send);
  * 进入 ESTABLISHING 阶段等待接收方 'C' 字符。
  *
  * @param send 发送器实例
+ * @return true  启动成功
+ * @return false send 为 NULL
  */
-void ymodem_sender_start(ymodem_sender_t* send);
+bool ymodem_sender_start(ymodem_sender_t* send);
 
 /**
  * @brief 启用 1K 数据包模式
@@ -214,3 +223,12 @@ void ymodem_sender_start(ymodem_sender_t* send);
  * @param send 发送器实例
  */
 void ymodem_sender_enable_1k(ymodem_sender_t* send);
+
+/**
+ * @brief 复位 Ymodem 发送器内部状态
+ *
+ * 根据当前错误类型和协议阶段执行分级复位。
+ *
+ * @param send 发送器实例
+ */
+void ymodem_sender_reset(ymodem_sender_t* send);
